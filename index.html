@@ -56,8 +56,7 @@ pre.log{max-height:150px;overflow:auto;font:12px Consolas,monospace;color:var(--
 .empty{color:var(--muted);font-size:13px;margin:0 20px 24px}
 #viewApp{display:none}
 .vwrap{padding:12px;max-width:900px;margin:0 auto}
-.vwrap .stage{aspect-ratio:auto;min-height:220px}
-.vwrap video{height:auto;max-height:75vh}
+.vwrap .stage{aspect-ratio:4/3;max-height:75vh;margin:0 auto}
 .vwrap button{flex:1 1 40%;padding:12px}
 </style>
 </head>
@@ -520,6 +519,7 @@ function initViewer(target) {
   $('viewApp').style.display = 'block';
   document.title = '遠端觀看';
   const vv = $('vvideo');
+  vv.muted = true; vv.playsInline = true; vv.setAttribute('playsinline', ''); vv.setAttribute('webkit-playsinline', '');
   let vpeer = null, conn = null, retry = null, noVideoTimer = null, gotVideo = false;
 
   const vlog = m => { $('vlog').textContent = `[${stamp().slice(11)}] ${m}\n` + $('vlog').textContent.slice(0, 4000); };
@@ -552,7 +552,7 @@ function initViewer(target) {
       call.answer();
       call.on('stream', s => {
         gotVideo = true; clearTimeout(noVideoTimer);
-        vv.srcObject = s; tryPlay(); watchMedia(call);
+        vv.srcObject = null; vv.srcObject = s; vv.onloadedmetadata = tryPlay; tryPlay(); watchMedia(call);
         ph(''); vstat('on', '即時畫面'); vlog('已連上電腦');
       });
       call.on('close', () => { if (!gotVideo) return; gotVideo = false; vstat('', '連線中斷'); ph('電腦端的畫面中斷了，5 秒後自動重連…'); schedule(); });
