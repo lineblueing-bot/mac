@@ -164,7 +164,9 @@ pre.log{max-height:150px;overflow:auto;font:12px Consolas,monospace;color:var(--
     <video id="vvideo" playsinline muted autoplay></video>
     <div class="overlay" id="vclock"></div>
     <div class="placeholder" id="vph">連線中…</div>
+    <div class="placeholder" id="vtap" style="display:none;cursor:pointer;background:rgba(0,0,0,.6);color:#fff;font-size:18px">▶ 點一下畫面開始播放</div>
   </div>
+  <div class="small" id="vdiag"></div>
   <div class="row" style="margin-top:10px">
     <button class="primary" id="vreconnect">重新連線</button>
     <button id="vfull">全螢幕</button>
@@ -525,6 +527,22 @@ function initViewer(target) {
   const ph = t => { $('vph').style.display = t ? 'flex' : 'none'; if (t) $('vph').textContent = t; };
   const schedule = () => { clearTimeout(retry); retry = setTimeout(connect, 5000); };
   setInterval(() => { $('vclock').textContent = stamp(); }, 500);
+  let statsTimer = null, lastBytes = 0, stuck = 0;
+  function tryPlay() { vv.play().then(() => { $('vtap').style.display = 'none'; }).catch(() => { $('vtap').style.display = 'flex'; }); }
+  function watchMedia(call) {
+    clearInterval(statsTimer); lastBytes = 0; stuck = 0;
+    statsTimer = setInterval(async () => {
+      const pc = call.peerConnection; if (!pc) return;
+      const ice = pc.iceConnectionState;
+      let bytes = 0, frames = 0;
+      try { (await pc.getStats()).forEach(r => { if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) { bytes = r.bytesReceived || 0; frames = r.framesDecoded || 0; } }); } catch (e) {}
+      $('vdiag').textContent = `診斷：${ice}｜已接收 ${Math.round(bytes / 1024)} KB｜畫格 ${frames}`;
+      if (ice === 'failed' || ice === 'disconnected') { vstat('warn', '影像被擋'); ph('影像傳不過來：手機和電腦之間的網路連線被擋住了。\n請讓手機連「跟電腦同一個 Wi-Fi」，再按重新連線。'); }
+      else if (bytes > lastBytes) { stuck = 0; ph(''); if (vv.paused) tryPlay(); }
+      else if (++stuck >= 5) { vstat('warn', '沒有影像'); ph('有連上，但沒有收到影像資料。\n請確認電腦那邊畫面正常、分頁沒有被最小化，再按重新連線。'); }
+      lastBytes = bytes;
+    }, 2000);
+  }
 
   function ensurePeer(cb) {
     if (vpeer && !vpeer.destroyed) { if (vpeer.open) cb(); else vpeer.once('open', cb); return; }
@@ -534,7 +552,7 @@ function initViewer(target) {
       call.answer();
       call.on('stream', s => {
         gotVideo = true; clearTimeout(noVideoTimer);
-        vv.srcObject = s; vv.play().catch(() => {});
+        vv.srcObject = s; tryPlay(); watchMedia(call);
         ph(''); vstat('on', '即時畫面'); vlog('已連上電腦');
       });
       call.on('close', () => { if (!gotVideo) return; gotVideo = false; vstat('', '連線中斷'); ph('電腦端的畫面中斷了，5 秒後自動重連…'); schedule(); });
@@ -575,6 +593,7 @@ function initViewer(target) {
   }
 
   $('vreconnect').onclick = connect;
+  $('vtap').onclick = tryPlay;
   $('vfull').onclick = () => {
     const st = $('vstage');
     try { if (st.requestFullscreen) st.requestFullscreen(); else if (vv.webkitEnterFullscreen) vv.webkitEnterFullscreen(); } catch (e) {}
