@@ -161,6 +161,7 @@ pre.log{max-height:150px;overflow:auto;font:12px Consolas,monospace;color:var(--
 <div class="vwrap">
   <div class="stage" id="vstage">
     <video id="vvideo" playsinline muted autoplay></video>
+    <img id="vimg" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain">
     <div class="overlay" id="vclock"></div>
     <div class="placeholder" id="vph">連線中…</div>
     <div class="placeholder" id="vtap" style="display:none;cursor:pointer;background:rgba(0,0,0,.6);color:#fff;font-size:18px">▶ 點一下畫面開始播放</div>
@@ -444,16 +445,12 @@ function startRemote() {
   peer = p;
   p.on('open', () => { if (peer !== p) return; updateViewers(); $('remoteMsg').textContent = '已開放：用手機相機掃描 QR Code，或把連結傳到手機打開。'; log('手機觀看已開放'); });
   p.on('connection', conn => {
-    conn.on('open', () => {
-      if (!stream) { try { conn.send({ type: 'offline' }); } catch (e) {} return; }
-      const call = p.call(conn.peer, stream);
-      const old = viewers.get(conn.peer);
-      if (old) { try { old.call && old.call.close(); } catch (e) {} }
-      viewers.set(conn.peer, { conn, call });
-      updateViewers(); log('有手機連線進來（共 ' + viewers.size + ' 支）');
-      if (call) call.on('close', () => dropViewer(conn.peer, conn));
+    conn.on('open', () => { conn._t = setTimeout(() => setupViewer(p, conn, false), 3000); });
+    conn.on('data', d => {
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'hello') { clearTimeout(conn._t); setupViewer(p, conn, !!d.jpeg); }
+      else if (d.type === 'snap' && running) { takeSnapshot(new Date(), '手機要求'); log('手機要求拍照'); }
     });
-    conn.on('data', d => { if (d && d.type === 'snap' && running) { takeSnapshot(new Date(), '手機要求'); log('手機要求拍照'); } });
     conn.on('close', () => dropViewer(conn.peer, conn));
     conn.on('error', () => dropViewer(conn.peer, conn));
   });
@@ -470,6 +467,35 @@ function startRemote() {
       log('遠端連線錯誤：' + e.type);
     }
   });
+}
+function setupViewer(p, conn, jpeg) {
+  if (!stream) { try { conn.send({ type: 'offline' }); } catch (e) {} return; }
+  const old = viewers.get(conn.peer);
+  if (old && old.conn === conn && old.jpeg === jpeg) return;
+  const v = { conn, call: null, jpeg };
+  viewers.set(conn.peer, v);
+  if (old && old.call) { try { old.call.close(); } catch (e) {} }
+  if (jpeg) jpegLoop();
+  else { v.call = p.call(conn.peer, stream); if (v.call) v.call.on('close', () => { if (viewers.get(conn.peer) === v) dropViewer(conn.peer, conn); }); }
+  updateViewers(); log(`有手機連線進來（${jpeg ? '相容模式' : '視訊模式'}，共 ${viewers.size} 支）`);
+}
+const jpegCanvas = document.createElement('canvas'); let jpegTimer = null, jpegBusy = false;
+function jpegLoop() {
+  if (jpegTimer) return;
+  jpegTimer = setInterval(async () => {
+    if (![...viewers.values()].some(v => v.jpeg)) { clearInterval(jpegTimer); jpegTimer = null; return; }
+    if (jpegBusy || !running || !video.videoWidth) return;
+    const ready = [...viewers.values()].filter(v => v.jpeg && v.conn.open && ((v.conn.dataChannel && v.conn.dataChannel.bufferedAmount) || 0) < 200000);
+    if (!ready.length) return;
+    jpegBusy = true;
+    try {
+      const w = Math.min(640, video.videoWidth), h = Math.round(video.videoHeight * w / video.videoWidth);
+      jpegCanvas.width = w; jpegCanvas.height = h;
+      jpegCanvas.getContext('2d').drawImage(video, 0, 0, w, h);
+      const blob = await new Promise(r => jpegCanvas.toBlob(r, 'image/jpeg', 0.6));
+      if (blob) { const buf = await blob.arrayBuffer(); ready.forEach(v => { try { v.conn.send(buf); } catch (e) {} }); }
+    } finally { jpegBusy = false; }
+  }, 250);
 }
 function dropViewer(id, conn) { const v = viewers.get(id); if (!v || (conn && v.conn !== conn)) return; viewers.delete(id); updateViewers(); log('有手機離開（剩 ' + viewers.size + ' 支）'); }
 function stopRemote() {
@@ -537,18 +563,38 @@ function initViewer(target) {
       let bytes = 0, frames = 0;
       try { (await pc.getStats()).forEach(r => { if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) { bytes = r.bytesReceived || 0; frames = r.framesDecoded || 0; } }); } catch (e) {}
       $('vdiag').textContent = `診斷：${ice}｜已接收 ${Math.round(bytes / 1024)} KB｜畫格 ${frames}`;
-      if (ice === 'failed' || ice === 'disconnected') { vstat('warn', '影像被擋'); ph('影像傳不過來：手機和電腦之間的網路連線被擋住了。\n請讓手機連「跟電腦同一個 Wi-Fi」，再按重新連線。'); }
-      else if (bytes > lastBytes) { stuck = 0; ph(''); if (vv.paused) tryPlay(); }
-      else if (++stuck >= 5) { vstat('warn', '沒有影像'); ph('有連上，但沒有收到影像資料。\n請確認電腦那邊畫面正常、分頁沒有被最小化，再按重新連線。'); }
+      if (ice === 'failed' || ice === 'disconnected') { useJpeg(); }
+      else if (bytes > lastBytes && frames > 0 && vv.videoWidth) { stuck = 0; ph(''); if (vv.paused) tryPlay(); }
+      else if (++stuck >= 3) { useJpeg(); }
       lastBytes = bytes;
     }, 2000);
   }
+
+  const vimg = $('vimg'), ua = navigator.userAgent;
+  let jpegMode = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) || (navigator.vendor || '').indexOf('Apple') >= 0 || new URLSearchParams(location.search).get('mode') === 'jpeg';
+  let lastUrl = null, frames = 0, lastFrameAt = 0;
+  function useJpeg() { if (jpegMode) return; jpegMode = true; clearInterval(statsTimer); vlog('改用相容模式傳送畫面'); if (conn && conn.open) { try { conn.send({ type: 'hello', jpeg: true }); } catch (e) {} } }
+  function showFrame(d) {
+    const u = URL.createObjectURL(d instanceof Blob ? d : new Blob([d], { type: 'image/jpeg' }));
+    const prevUrl = lastUrl; lastUrl = u;
+    vimg.onload = () => { if (prevUrl) URL.revokeObjectURL(prevUrl); };
+    vimg.src = u; vimg.style.display = 'block'; vv.style.display = 'none'; $('vtap').style.display = 'none';
+    frames++; lastFrameAt = Date.now();
+    if (!gotVideo) { gotVideo = true; clearTimeout(noVideoTimer); ph(''); vstat('on', '即時畫面'); vlog('已連上電腦（相容模式）'); }
+    else if ($('vph').style.display !== 'none') { ph(''); vstat('on', '即時畫面'); }
+  }
+  setInterval(() => {
+    if (!jpegMode) return;
+    $('vdiag').textContent = `診斷：相容模式｜已收到 ${frames} 張`;
+    if (gotVideo && Date.now() - lastFrameAt > 8000) { vstat('warn', '畫面停住'); ph('畫面停住了，可能是網路不穩或電腦端分頁被最小化。\n可按「重新連線」。'); }
+  }, 2000);
 
   function ensurePeer(cb) {
     if (vpeer && !vpeer.destroyed) { if (vpeer.open) cb(); else vpeer.once('open', cb); return; }
     vpeer = new Peer({ debug: 0 });
     vpeer.on('open', cb);
     vpeer.on('call', call => {
+      if (jpegMode) { try { call.close(); } catch (e) {} return; }
       call.answer();
       call.on('stream', s => {
         gotVideo = true; clearTimeout(noVideoTimer);
@@ -575,10 +621,12 @@ function initViewer(target) {
       const c = vpeer.connect(target, { reliable: true });
       conn = c;
       c.on('open', () => {
+        try { c.send({ type: 'hello', jpeg: jpegMode }); } catch (e) {}
         noVideoTimer = setTimeout(() => { if (!gotVideo && conn === c) { vstat('warn', '影像傳不過來'); ph('已經找到電腦，但影像傳不過來。\n可能是公司網路或手機網路擋住了這種連線，\n請試試換成家裡的 Wi-Fi，或按「重新連線」。'); } }, 15000);
       });
       c.on('data', d => {
         if (!d || conn !== c) return;
+        if (d instanceof ArrayBuffer || ArrayBuffer.isView(d) || d instanceof Blob) { showFrame(d); return; }
         if (d.type === 'motion') {
           vlog('⚠ 偵測到動態（' + String(d.time).slice(11) + '）');
           vstat('alert', '偵測到動態！');
@@ -599,9 +647,10 @@ function initViewer(target) {
     try { if (st.requestFullscreen) st.requestFullscreen(); else if (vv.webkitEnterFullscreen) vv.webkitEnterFullscreen(); } catch (e) {}
   };
   $('vsnap').onclick = () => {
-    if (!vv.videoWidth) return;
-    const c = document.createElement('canvas'); c.width = vv.videoWidth; c.height = vv.videoHeight;
-    c.getContext('2d').drawImage(vv, 0, 0);
+    const src = jpegMode ? vimg : vv, w = jpegMode ? vimg.naturalWidth : vv.videoWidth, h = jpegMode ? vimg.naturalHeight : vv.videoHeight;
+    if (!w) return;
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(src, 0, 0);
     c.toBlob(b => { if (!b) return; const u = URL.createObjectURL(b); download(u, '遠端截圖_' + fileStamp(new Date()) + '.jpg'); setTimeout(() => URL.revokeObjectURL(u), 10000); vlog('已截圖'); }, 'image/jpeg', 0.9);
   };
   $('vremoteSnap').onclick = () => { if (conn && conn.open) { conn.send({ type: 'snap' }); vlog('已請電腦拍照存檔'); } else vlog('還沒連上電腦'); };
