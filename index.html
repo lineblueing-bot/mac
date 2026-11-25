@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>網頁版監控鏡頭</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#2a2f3a;--text:#e6e8ec;--muted:#9aa3b2;--accent:#3b82f6;--red:#ef4444;--green:#22c55e;--amber:#f59e0b}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font-size:18px;margin:0;font-weight:600}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.dot{width:10px;height:10px;border-radius:50%;background:#555;flex:none}
+.dot.on{background:var(--green)}
+.dot.warn{background:var(--amber)}
+.dot.alert{background:var(--red);box-shadow:0 0 10px var(--red)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;padding:16px 20px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.stage{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:4/3}
+.stage.alert{outline:3px solid var(--red)}
+video{width:100%;height:100%;object-fit:contain;display:block}
+.overlay{position:absolute;left:10px;top:10px;font:600 14px Consolas,monospace;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:6px}
+.rec{position:absolute;right:10px;top:10px;background:var(--red);color:#fff;font-size:13px;padding:4px 8px;border-radius:6px;display:none}
+.placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:15px;text-align:center;padding:20px;white-space:pre-line;line-height:1.8}
+.meter{height:8px;background:var(--line);border-radius:4px;margin-top:10px;position:relative}
+.meter>#meterBar{height:100%;width:0;background:var(--green);border-radius:4px;transition:width .15s}
+.meter .mark{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--amber)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.panel h2{font-size:14px;margin:0 0 10px;color:var(--muted);font-weight:600}
+.side{display:flex;flex-direction:column;gap:12px}
+.lbl{display:flex;justify-content:space-between;font-size:13px;margin:10px 0 4px}
+.lbl span{color:var(--muted)}
+input[type=range]{width:100%}
+select,input[type=text]{width:100%;padding:6px;background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:6px;font-size:13px}
+button{padding:8px 12px;border-radius:6px;border:1px solid var(--line);background:#222733;color:var(--text);cursor:pointer;font-size:14px;font-family:inherit}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.check{display:flex;align-items:center;gap:6px;font-size:13px;margin-top:8px;cursor:pointer}
+.small{font-size:12px;color:var(--muted);line-height:1.6;margin-top:6px}
+.warn{color:var(--amber)}
+pre.log{max-height:150px;overflow:auto;font:12px Consolas,monospace;color:var(--muted);white-space:pre-wrap;margin:0}
+#qr{background:#fff;padding:8px;border-radius:8px;width:fit-content;margin-top:10px}
+#qr:empty{display:none}
+.galhead{display:flex;justify-content:space-between;align-items:center;margin:4px 20px 10px}
+.galhead h2{font-size:15px;margin:0}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin:0 20px 24px}
+.item{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:12px}
+.item img,.item video{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#000;cursor:pointer}
+.item .meta{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;color:var(--muted)}
+.item a{color:var(--accent);text-decoration:none}
+.tag{font-size:11px;padding:1px 5px;border-radius:4px;background:#222733;margin-right:4px}
+.empty{color:var(--muted);font-size:13px;margin:0 20px 24px}
+#viewApp{display:none}
+.vwrap{padding:12px;max-width:900px;margin:0 auto}
+.vwrap .stage{aspect-ratio:auto;min-height:220px}
+.vwrap video{height:auto;max-height:75vh}
+.vwrap button{flex:1 1 40%;padding:12px}
+</style>
+</head>
+<body>
+
+<!-- ======================= 電腦端（監控） ======================= -->
+<div id="camApp">
+<header>
+  <h1>網頁版監控鏡頭</h1>
+  <div class="status"><div class="dot" id="dot"></div><span id="statusTxt">未啟動</span></div>
+  <div class="status"><div class="dot" id="rdot"></div><span id="rstatusTxt">手機觀看：未開放</span></div>
+  <div style="margin-left:auto" class="status">偵測次數：<b id="count" style="color:var(--text)">0</b></div>
+</header>
+
+<main>
+  <section>
+    <div class="stage" id="stage">
+      <video id="video" muted playsinline></video>
+      <div class="overlay" id="clock"></div>
+      <div class="rec" id="recTag">● 錄影中</div>
+      <div class="placeholder" id="ph">按右邊「開始監控」，並允許瀏覽器使用相機</div>
+    </div>
+    <div class="meter"><div id="meterBar"></div><div class="mark" id="mark"></div></div>
+    <div class="small">畫面變化：<b id="pctV">0%</b>　（黃線＝觸發門檻，綠條超過黃線就會觸發）</div>
+    <div class="small warn">提醒：監控時請讓這個分頁保持顯示（視窗可以縮小放角落，但不要最小化或切到別的分頁），電腦也要設定成不會自動睡眠。</div>
+  </section>
+
+  <aside class="side">
+    <div class="panel">
+      <h2>鏡頭</h2>
+      <select id="camSel"><option value="">（預設鏡頭）</option></select>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="startBtn">開始監控</button>
+        <button id="stopBtn" disabled>停止</button>
+        <button id="manualBtn" disabled>手動拍照</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>手機觀看</h2>
+      <label class="check"><input type="checkbox" id="allowRemote" checked> 開始監控時，開放手機連線觀看</label>
+      <div class="small" id="remoteMsg">開始監控後，用手機相機掃描 QR Code 就能看即時畫面。</div>
+      <div id="qr"></div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="linkBox" readonly style="flex:1">
+        <button id="copyBtn">複製</button>
+      </div>
+      <div class="small">目前觀看中：<b id="viewerCount" style="color:var(--text)">0</b> 支手機</div>
+      <button id="resetLinkBtn" style="margin-top:8px">重設連結（舊連結會失效）</button>
+      <div class="small warn">這個連結就像鑰匙，拿到的人都能看到畫面，請只傳給信任的人。</div>
+    </div>
+
+    <div class="panel">
+      <h2>偵測設定</h2>
+      <div class="lbl">靈敏度 <span id="sensV"></span></div>
+      <input type="range" id="sens" min="1" max="100" value="60">
+      <div class="lbl">觸發面積 <span id="areaV"></span></div>
+      <input type="range" id="area" min="0.5" max="20" step="0.5" value="2">
+      <div class="lbl">冷卻時間 <span id="coolV"></span></div>
+      <input type="range" id="cool" min="1" max="60" value="5">
+      <div class="small">靈敏度越高，越細微的變化也算「有動」。觸發面積是畫面有多少比例在動才觸發，調高可以避免光線閃爍誤判。冷卻時間內不會重複觸發。</div>
+    </div>
+
+    <div class="panel">
+      <h2>偵測到動態時</h2>
+      <label class="check"><input type="checkbox" id="doSnap" checked> 拍照（照片印上日期時間）</label>
+      <label class="check"><input type="checkbox" id="doClip"> 錄一段影片</label>
+      <div class="lbl">影片長度 <span id="clipLenV"></span></div>
+      <input type="range" id="clipLen" min="5" max="60" step="5" value="10">
+      <label class="check"><input type="checkbox" id="doBeep"> 發出提示音</label>
+      <div class="small">有手機在看時，手機也會收到「偵測到動態」通知並震動（Android）。</div>
+    </div>
+
+    <div class="panel">
+      <h2>存檔</h2>
+      <button id="dirBtn">選擇存檔資料夾</button>
+      <div class="small" id="dirName">尚未選擇：照片只會留在下方畫面，關掉網頁就沒了。</div>
+      <label class="check"><input type="checkbox" id="autoDl"> 沒選資料夾時，自動下載到「下載」資料夾</label>
+    </div>
+
+    <div class="panel">
+      <h2>紀錄</h2>
+      <pre class="log" id="log"></pre>
+    </div>
+  </aside>
+</main>
+
+<div class="galhead">
+  <h2>擷取紀錄（<span id="galCount">0</span>）</h2>
+  <button id="clearBtn">清除畫面上的紀錄</button>
+</div>
+<div class="gallery" id="gallery"></div>
+<div class="empty" id="galEmpty">還沒有擷取到畫面。</div>
+</div>
+
+<!-- ======================= 手機端（觀看） ======================= -->
+<div id="viewApp">
+<header>
+  <h1>遠端觀看</h1>
+  <div class="status"><div class="dot" id="vdot"></div><span id="vstatus">連線中…</span></div>
+</header>
+<div class="vwrap">
+  <div class="stage" id="vstage">
+    <video id="vvideo" playsinline muted autoplay></video>
+    <div class="overlay" id="vclock"></div>
+    <div class="placeholder" id="vph">連線中…</div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" id="vreconnect">重新連線</button>
+    <button id="vfull">全螢幕</button>
+    <button id="vsnap">截圖存到手機</button>
+    <button id="vremoteSnap">請電腦拍照存檔</button>
+  </div>
+  <div class="panel" style="margin-top:12px">
+    <h2>動態通知</h2>
+    <pre class="log" id="vlog"></pre>
+  </div>
+  <div class="small">畫面是直接從電腦傳過來的即時影像，不會經過或存在任何雲端。</div>
+</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, '0');
+const stamp = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const fileStamp = d => `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+
+const VIEW_TARGET = new URLSearchParams(location.search).get('view');
+
+/* ============================================================
+   電腦端
+   ============================================================ */
+const video = $('video'), camSel = $('camSel');
+const MAX_ITEMS = 120;
+let stream = null, running = false, timer = null, prev = null;
+let lastTrigger = 0, armedAt = 0, recorder = null, dirHandle = null, wakeLock = null, actx = null;
+let items = [], eventCount = 0;
+let peer = null; const viewers = new Map();
+
+const small = document.createElement('canvas'); small.width = 160; small.height = 120;
+const sctx = small.getContext('2d', { willReadFrequently: true });
+const snap = document.createElement('canvas'); const snapCtx = snap.getContext('2d');
+
+function log(msg) { $('log').textContent = `[${stamp().slice(11)}] ${msg}\n` + $('log').textContent.slice(0, 6000); }
+
+/* ---------- 設定 ---------- */
+const KEYS = ['sens','area','cool','clipLen','doSnap','doClip','doBeep','autoDl','allowRemote'];
+function loadSettings() {
+  try {
+    const s = JSON.parse(lsGet('camwatch') || '{}');
+    for (const k of KEYS) { if (s[k] === undefined) continue; const el = $(k); if (el.type === 'checkbox') el.checked = s[k]; else el.value = s[k]; }
+  } catch (e) {}
+  updateLabels();
+}
+function saveSettings() { const s = {}; for (const k of KEYS) { const el = $(k); s[k] = el.type === 'checkbox' ? el.checked : el.value; } lsSet('camwatch', JSON.stringify(s)); }
+function updateLabels() {
+  $('sensV').textContent = $('sens').value;
+  $('areaV').textContent = $('area').value + '%';
+  $('coolV').textContent = $('cool').value + ' 秒';
+  $('clipLenV').textContent = $('clipLen').value + ' 秒';
+  $('mark').style.left = Math.min(100, $('area').value * 5) + '%';
+}
+
+function setStatus(cls, txt) { $('dot').className = 'dot ' + cls; $('statusTxt').textContent = txt; $('stage').classList.toggle('alert', cls === 'alert'); }
+function showMsg(html, isErr) {
+  const ph = $('ph'); ph.style.display = 'flex';
+  ph.innerHTML = `<div style="max-width:520px;${isErr ? 'color:#fca5a5' : ''}">${html}</div>`;
+}
+function envProblem() {
+  if (window.top !== window.self) return '這個頁面現在是在「預覽視窗」裡開啟的，預覽視窗不允許使用鏡頭。<br>請用 <b>Chrome</b> 或 <b>Edge</b> 直接開啟網址或檔案。';
+  if (!window.isSecureContext) return '目前的開啟方式瀏覽器不允許使用鏡頭，網址必須是 https:// 開頭。';
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return '這個瀏覽器無法使用鏡頭，請改用 <b>Chrome</b> 或 <b>Edge</b> 開啟。';
+  return '';
+}
+
+/* ---------- 鏡頭 ---------- */
+async function listCams() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const cur = camSel.value;
+    camSel.innerHTML = '';
+    if (!devs.length) { camSel.innerHTML = '<option value="">找不到鏡頭</option>'; return; }
+    devs.forEach((d, i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || `鏡頭 ${i+1}`; camSel.appendChild(o); });
+    if (cur && [...camSel.options].some(o => o.value === cur)) camSel.value = cur;
+  } catch (e) {}
+}
+async function openCam(id) {
+  const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  if (id) { try { return await navigator.mediaDevices.getUserMedia({ video: { ...base, deviceId: { exact: id } }, audio: false }); } catch (e) { if (e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError') throw e; } }
+  return await navigator.mediaDevices.getUserMedia({ video: base, audio: false });
+}
+
+async function start() {
+  const p = envProblem();
+  if (p) { showMsg('⚠ ' + p, true); log('無法啟動：開啟方式不支援鏡頭'); return; }
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  showMsg('正在開啟鏡頭…<br>如果網址列附近跳出「要允許使用相機嗎？」，請按<b>允許</b>。');
+  try {
+    stream = await openCam(camSel.value);
+    video.srcObject = stream;
+    await video.play();
+    $('ph').style.display = 'none';
+    await listCams();
+    const track = stream.getVideoTracks()[0];
+    const sid = track.getSettings().deviceId; if (sid) camSel.value = sid;
+    track.onended = () => { log('鏡頭連線中斷'); stop(); };
+    running = true; prev = null;
+    armedAt = Date.now() + 3000;
+    timer = setInterval(tick, 200);
+    setStatus('on', '監控中');
+    $('startBtn').disabled = true; $('stopBtn').disabled = false; $('manualBtn').disabled = false; camSel.disabled = true;
+    log('開始監控：' + (track.label || '鏡頭'));
+    requestWake();
+    if ($('allowRemote').checked) startRemote();
+  } catch (e) {
+    log('無法開啟鏡頭：' + e.name);
+    const why = {
+      NotAllowedError: '相機權限被拒絕。請點網址列左邊的圖示 → 相機 → 改成「允許」，再重新整理頁面（F5）。<br>如果還是不行：Windows 設定 → 隱私權與安全性 → 相機 → 開啟相機存取。',
+      NotFoundError: '找不到鏡頭。請確認鏡頭有接上，或筆電的鏡頭快門／Fn 鏡頭開關有打開。',
+      NotReadableError: '鏡頭被其他程式占用中。請關掉 Teams、LINE、Zoom、相機 App 等再試一次。',
+      AbortError: '鏡頭被其他程式占用中。請關掉 Teams、LINE、Zoom、相機 App 等再試一次。'
+    }[e.name] || ('開啟失敗（' + e.name + '：' + (e.message || '') + '）');
+    showMsg('⚠ ' + why, true);
+  }
+}
+
+function stop() {
+  running = false; clearInterval(timer);
+  stopRemote();
+  if (recorder && recorder.state === 'recording') recorder.stop();
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null; showMsg('已停止。按「開始監控」重新開始。');
+  setStatus('', '已停止');
+  $('startBtn').disabled = false; $('stopBtn').disabled = true; $('manualBtn').disabled = true; camSel.disabled = false;
+  $('meterBar').style.width = '0';
+  releaseWake();
+  log('停止監控');
+}
+
+/* ---------- 移動偵測 ---------- */
+function tick() {
+  if (!running || video.readyState < 2) return;
+  sctx.drawImage(video, 0, 0, 160, 120);
+  const d = sctx.getImageData(0, 0, 160, 120).data;
+  const n = 160 * 120, cur = new Uint8ClampedArray(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) cur[i] = (d[j] * 77 + d[j+1] * 150 + d[j+2] * 29) >> 8;
+  if (!prev) { prev = cur; return; }
+  const th = Math.round(80 - $('sens').value * 0.7);
+  let changed = 0;
+  for (let i = 0; i < n; i++) if (Math.abs(cur[i] - prev[i]) > th) changed++;
+  prev = cur;
+  const pct = changed / n * 100;
+  const over = pct >= +$('area').value;
+  $('meterBar').style.width = Math.min(100, pct * 5) + '%';
+  $('meterBar').style.background = over ? 'var(--red)' : 'var(--green)';
+  $('pctV').textContent = pct.toFixed(1) + '%';
+  const now = Date.now();
+  if (over && now >= armedAt && now - lastTrigger >= $('cool').value * 1000) { lastTrigger = now; trigger(pct); }
+}
+
+async function trigger(pct) {
+  eventCount++; $('count').textContent = eventCount;
+  const d = new Date();
+  log(`偵測到動態（變化 ${pct.toFixed(1)}%）`);
+  setStatus('alert', '偵測到動態！');
+  clearTimeout(trigger.t); trigger.t = setTimeout(() => { if (running) setStatus('on', '監控中'); }, 2000);
+  viewers.forEach(v => { try { v.conn.send({ type: 'motion', time: stamp(d) }); } catch (e) {} });
+  if ($('doBeep').checked) beep();
+  if ($('doSnap').checked) await takeSnapshot(d, false);
+  if ($('doClip').checked) startClip(d);
+}
+
+/* ---------- 拍照 ---------- */
+async function takeSnapshot(d, tag) {
+  const w = video.videoWidth, h = video.videoHeight; if (!w) return;
+  snap.width = w; snap.height = h;
+  snapCtx.drawImage(video, 0, 0, w, h);
+  const fs = Math.max(16, Math.round(h / 24)), txt = stamp(d);
+  snapCtx.font = `bold ${fs}px Consolas, monospace`;
+  const tw = snapCtx.measureText(txt).width;
+  snapCtx.fillStyle = 'rgba(0,0,0,.6)'; snapCtx.fillRect(8, 8, tw + 16, fs + 14);
+  snapCtx.fillStyle = '#fff'; snapCtx.fillText(txt, 16, 8 + fs + 2);
+  const blob = await new Promise(r => snap.toBlob(r, 'image/jpeg', 0.85));
+  if (!blob) return;
+  await addItem({ type: 'img', blob, name: `監控_${fileStamp(d)}${tag ? '_' + tag : ''}.jpg`, time: stamp(d) });
+}
+
+/* ---------- 錄影片段 ---------- */
+function startClip(d) {
+  if (!window.MediaRecorder) { log('這個瀏覽器不支援錄影'); return; }
+  const len = $('clipLen').value * 1000;
+  if (recorder && recorder.state === 'recording') {
+    clearTimeout(recorder._t);
+    const left = Math.max(1000, Math.min(len, recorder._start + 120000 - Date.now()));
+    const r = recorder; r._t = setTimeout(() => r.state === 'recording' && r.stop(), left);
+    return;
+  }
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+  const chunks = [];
+  let r;
+  try { r = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 2500000 } : undefined); }
+  catch (e) { log('無法錄影：' + e.message); return; }
+  recorder = r; r._start = Date.now();
+  r.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  r.onstop = () => {
+    $('recTag').style.display = 'none';
+    const type = r.mimeType || mime || 'video/webm';
+    const ext = type.includes('mp4') ? 'mp4' : 'webm';
+    addItem({ type: 'video', blob: new Blob(chunks, { type }), name: `監控_${fileStamp(d)}.${ext}`, time: stamp(d) });
+    log(`影片完成（${Math.round((Date.now() - r._start) / 1000)} 秒）`);
+  };
+  r.start(1000);
+  $('recTag').style.display = 'block';
+  r._t = setTimeout(() => r.state === 'recording' && r.stop(), len);
+}
+
+/* ---------- 存檔 ---------- */
+async function pickDir() {
+  if (!window.showDirectoryPicker) { log('這個瀏覽器不支援直接存到資料夾，請用 Chrome 或 Edge，或勾選「自動下載」。'); $('dirName').textContent = '⚠ 這個瀏覽器不支援選資料夾，請用 Chrome 或 Edge，或勾選下面的「自動下載」。'; return; }
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    $('dirName').textContent = '✔ 自動存到資料夾：' + dirHandle.name;
+    log('存檔資料夾：' + dirHandle.name);
+  } catch (e) { if (e.name !== 'AbortError') log('選資料夾失敗：' + e.message); }
+}
+function download(url, name) { const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+async function addItem(it) {
+  it.url = URL.createObjectURL(it.blob);
+  if (dirHandle) {
+    try { const fh = await dirHandle.getFileHandle(it.name, { create: true }); const w = await fh.createWritable(); await w.write(it.blob); await w.close(); it.saved = true; }
+    catch (e) { log('寫入資料夾失敗：' + e.message); }
+  } else if ($('autoDl').checked) { download(it.url, it.name); it.saved = true; }
+  items.unshift(it);
+  while (items.length > MAX_ITEMS) { const old = items.pop(); URL.revokeObjectURL(old.url); }
+  renderGallery();
+}
+function renderGallery() {
+  const g = $('gallery'); g.innerHTML = '';
+  $('galCount').textContent = items.length;
+  $('galEmpty').style.display = items.length ? 'none' : 'block';
+  for (const it of items) {
+    const div = document.createElement('div'); div.className = 'item';
+    const media = document.createElement(it.type === 'img' ? 'img' : 'video');
+    media.src = it.url;
+    if (it.type === 'video') { media.controls = true; media.muted = true; media.preload = 'metadata'; }
+    else media.onclick = () => window.open(it.url, '_blank');
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const left = document.createElement('span');
+    left.innerHTML = `<span class="tag">${it.type === 'img' ? '照片' : '影片'}</span>${it.time.slice(5)}`;
+    const a = document.createElement('a'); a.href = it.url; a.download = it.name; a.textContent = it.saved ? '已存 ✔' : '下載';
+    meta.append(left, a); div.append(media, meta); g.appendChild(div);
+  }
+}
+
+/* ---------- 手機觀看（電腦端） ---------- */
+function randId() { const a = new Uint8Array(12); crypto.getRandomValues(a); return 'cam-' + [...a].map(b => b.toString(36).padStart(2, '0')).join(''); }
+function camId() { let id = lsGet('camwatch_id'); if (!id) { id = randId(); lsSet('camwatch_id', id); } return id; }
+function viewUrl() { return location.origin + location.pathname + '?view=' + camId(); }
+function setRemote(cls, txt) { $('rdot').className = 'dot ' + cls; $('rstatusTxt').textContent = '手機觀看：' + txt; }
+function updateViewers() { $('viewerCount').textContent = viewers.size; if (peer && peer.open) setRemote('on', viewers.size ? `${viewers.size} 支手機觀看中` : '已開放，等待連線'); }
+
+function renderLink() {
+  if (location.protocol === 'file:') {
+    $('remoteMsg').innerHTML = '<span class="warn">⚠ 現在是從電腦裡的檔案開啟，手機連不進來。請改開放在網路上的網址（例如 GitHub Pages），QR Code 才會出現。</span>';
+    $('linkBox').value = ''; $('qr').innerHTML = '';
+    return false;
+  }
+  const url = viewUrl();
+  $('linkBox').value = url;
+  $('qr').innerHTML = '';
+  if (typeof QRCode !== 'undefined') { try { new QRCode($('qr'), { text: url, width: 170, height: 170, correctLevel: QRCode.CorrectLevel.M }); } catch (e) {} }
+  return true;
+}
+
+function startRemote() {
+  if (!renderLink()) { setRemote('warn', '需放到網路上才能用'); return; }
+  if (typeof Peer === 'undefined') { setRemote('warn', '連線元件載入失敗'); $('remoteMsg').textContent = '連線元件沒有載入，請確認電腦有連上網路後重新整理頁面。'; return; }
+  if (peer && !peer.destroyed) return;
+  setRemote('warn', '連線中…');
+  const p = new Peer(camId(), { debug: 0 });
+  peer = p;
+  p.on('open', () => { if (peer !== p) return; updateViewers(); $('remoteMsg').textContent = '已開放：用手機相機掃描 QR Code，或把連結傳到手機打開。'; log('手機觀看已開放'); });
+  p.on('connection', conn => {
+    conn.on('open', () => {
+      if (!stream) { try { conn.send({ type: 'offline' }); } catch (e) {} return; }
+      const call = p.call(conn.peer, stream);
+      const old = viewers.get(conn.peer);
+      if (old) { try { old.call && old.call.close(); } catch (e) {} }
+      viewers.set(conn.peer, { conn, call });
+      updateViewers(); log('有手機連線進來（共 ' + viewers.size + ' 支）');
+      if (call) call.on('close', () => dropViewer(conn.peer, conn));
+    });
+    conn.on('data', d => { if (d && d.type === 'snap' && running) { takeSnapshot(new Date(), '手機要求'); log('手機要求拍照'); } });
+    conn.on('close', () => dropViewer(conn.peer, conn));
+    conn.on('error', () => dropViewer(conn.peer, conn));
+  });
+  p.on('disconnected', () => { if (peer !== p || p.destroyed) return; setRemote('warn', '重新連線中…'); setTimeout(() => { if (peer === p && !p.destroyed) { try { p.reconnect(); } catch (e) {} } }, 3000); });
+  p.on('error', e => {
+    if (peer !== p) return;
+    if (e.type === 'unavailable-id') {
+      setRemote('warn', '連結還在被占用，10 秒後重試');
+      p.destroy(); peer = null;
+      setTimeout(() => { if (running && $('allowRemote').checked) startRemote(); }, 10000);
+    } else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') {
+      setRemote('warn', '連線伺服器連不上，重試中');
+    } else if (e.type !== 'peer-unavailable') {
+      log('遠端連線錯誤：' + e.type);
+    }
+  });
+}
+function dropViewer(id, conn) { const v = viewers.get(id); if (!v || (conn && v.conn !== conn)) return; viewers.delete(id); updateViewers(); log('有手機離開（剩 ' + viewers.size + ' 支）'); }
+function stopRemote() {
+  viewers.forEach(v => { try { v.call && v.call.close(); } catch (e) {} try { v.conn.close(); } catch (e) {} });
+  viewers.clear(); $('viewerCount').textContent = 0;
+  if (peer) { const p = peer; peer = null; try { p.destroy(); } catch (e) {} }
+  setRemote('', '未開放');
+}
+
+/* ---------- 其他 ---------- */
+function beep() {
+  try { if (!actx) return; const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = 880; g.gain.value = 0.15; o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.25); } catch (e) {}
+}
+async function requestWake() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+function releaseWake() { try { if (wakeLock) wakeLock.release(); } catch (e) {} wakeLock = null; }
+
+function initCamera() {
+  setInterval(() => { $('clock').textContent = stamp(); }, 500);
+  KEYS.forEach(k => $(k).addEventListener('input', () => { updateLabels(); saveSettings(); }));
+  $('allowRemote').addEventListener('change', () => { if (!running) return; if ($('allowRemote').checked) startRemote(); else stopRemote(); });
+  $('startBtn').onclick = start;
+  $('stopBtn').onclick = stop;
+  $('manualBtn').onclick = () => takeSnapshot(new Date(), '手動');
+  $('dirBtn').onclick = pickDir;
+  $('clearBtn').onclick = () => { items.forEach(i => URL.revokeObjectURL(i.url)); items = []; renderGallery(); };
+  $('copyBtn').onclick = async () => { const v = $('linkBox').value; if (!v) return; try { await navigator.clipboard.writeText(v); $('copyBtn').textContent = '已複製'; } catch (e) { $('linkBox').select(); document.execCommand('copy'); $('copyBtn').textContent = '已複製'; } setTimeout(() => $('copyBtn').textContent = '複製', 1500); };
+  $('resetLinkBtn').onclick = () => {
+    const wasOn = !!peer;
+    stopRemote();
+    lsSet('camwatch_id', randId());
+    renderLink();
+    log('已重設連結，舊連結失效');
+    if (wasOn && running) startRemote();
+  };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && running) requestWake(); });
+  window.addEventListener('beforeunload', e => { if (running || items.some(i => !i.saved)) { e.preventDefault(); e.returnValue = ''; } });
+  if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) listCams();
+  loadSettings(); renderGallery(); renderLink();
+  const p = envProblem(); if (p) showMsg('⚠ ' + p, true);
+}
+
+/* ============================================================
+   手機端（觀看）
+   ============================================================ */
+function initViewer(target) {
+  $('camApp').style.display = 'none';
+  $('viewApp').style.display = 'block';
+  document.title = '遠端觀看';
+  const vv = $('vvideo');
+  let vpeer = null, conn = null, retry = null, noVideoTimer = null, gotVideo = false;
+
+  const vlog = m => { $('vlog').textContent = `[${stamp().slice(11)}] ${m}\n` + $('vlog').textContent.slice(0, 4000); };
+  const vstat = (cls, t) => { $('vdot').className = 'dot ' + cls; $('vstatus').textContent = t; $('vstage').classList.toggle('alert', cls === 'alert'); };
+  const ph = t => { $('vph').style.display = t ? 'flex' : 'none'; if (t) $('vph').textContent = t; };
+  const schedule = () => { clearTimeout(retry); retry = setTimeout(connect, 5000); };
+  setInterval(() => { $('vclock').textContent = stamp(); }, 500);
+
+  function ensurePeer(cb) {
+    if (vpeer && !vpeer.destroyed) { if (vpeer.open) cb(); else vpeer.once('open', cb); return; }
+    vpeer = new Peer({ debug: 0 });
+    vpeer.on('open', cb);
+    vpeer.on('call', call => {
+      call.answer();
+      call.on('stream', s => {
+        gotVideo = true; clearTimeout(noVideoTimer);
+        vv.srcObject = s; vv.play().catch(() => {});
+        ph(''); vstat('on', '即時畫面'); vlog('已連上電腦');
+      });
+      call.on('close', () => { if (!gotVideo) return; gotVideo = false; vstat('', '連線中斷'); ph('電腦端的畫面中斷了，5 秒後自動重連…'); schedule(); });
+    });
+    vpeer.on('error', e => {
+      if (e.type === 'peer-unavailable') { vstat('warn', '電腦未開啟'); ph('電腦端目前沒有開啟監控，或連結已經重設。\n每 5 秒會自動重試…'); schedule(); }
+      else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') { vstat('warn', '網路不穩'); ph('連不上連線伺服器，請確認手機有網路。\n5 秒後自動重試…'); try { vpeer.destroy(); } catch (x) {} vpeer = null; schedule(); }
+      else { vlog('錯誤：' + e.type); schedule(); }
+    });
+    vpeer.on('disconnected', () => { try { vpeer && !vpeer.destroyed && vpeer.reconnect(); } catch (x) {} });
+  }
+
+  function connect() {
+    clearTimeout(retry); clearTimeout(noVideoTimer);
+    if (typeof Peer === 'undefined') { vstat('warn', '載入失敗'); ph('連線元件沒有載入，請確認手機有網路後重新整理頁面。'); return; }
+    if (conn) { const old = conn; conn = null; try { old.close(); } catch (e) {} }
+    gotVideo = false;
+    vstat('warn', '連線中…'); ph('連線中…');
+    ensurePeer(() => {
+      const c = vpeer.connect(target, { reliable: true });
+      conn = c;
+      c.on('open', () => {
+        noVideoTimer = setTimeout(() => { if (!gotVideo && conn === c) { vstat('warn', '影像傳不過來'); ph('已經找到電腦，但影像傳不過來。\n可能是公司網路或手機網路擋住了這種連線，\n請試試換成家裡的 Wi-Fi，或按「重新連線」。'); } }, 15000);
+      });
+      c.on('data', d => {
+        if (!d || conn !== c) return;
+        if (d.type === 'motion') {
+          vlog('⚠ 偵測到動態（' + String(d.time).slice(11) + '）');
+          vstat('alert', '偵測到動態！');
+          setTimeout(() => { if (gotVideo) vstat('on', '即時畫面'); }, 2500);
+          try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
+        } else if (d.type === 'offline') {
+          vstat('warn', '電腦未開始監控'); ph('電腦已經打開網頁，但還沒按「開始監控」。\n每 5 秒會自動重試…'); schedule();
+        }
+      });
+      c.on('close', () => { if (conn !== c) return; conn = null; if (gotVideo) { gotVideo = false; vstat('', '連線中斷'); ph('連線中斷，5 秒後自動重連…'); } schedule(); });
+    });
+  }
+
+  $('vreconnect').onclick = connect;
+  $('vfull').onclick = () => {
+    const st = $('vstage');
+    try { if (st.requestFullscreen) st.requestFullscreen(); else if (vv.webkitEnterFullscreen) vv.webkitEnterFullscreen(); } catch (e) {}
+  };
+  $('vsnap').onclick = () => {
+    if (!vv.videoWidth) return;
+    const c = document.createElement('canvas'); c.width = vv.videoWidth; c.height = vv.videoHeight;
+    c.getContext('2d').drawImage(vv, 0, 0);
+    c.toBlob(b => { if (!b) return; const u = URL.createObjectURL(b); download(u, '遠端截圖_' + fileStamp(new Date()) + '.jpg'); setTimeout(() => URL.revokeObjectURL(u), 10000); vlog('已截圖'); }, 'image/jpeg', 0.9);
+  };
+  $('vremoteSnap').onclick = () => { if (conn && conn.open) { conn.send({ type: 'snap' }); vlog('已請電腦拍照存檔'); } else vlog('還沒連上電腦'); };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !gotVideo) connect(); });
+  connect();
+}
+
+if (VIEW_TARGET) initViewer(VIEW_TARGET); else initCamera();
+</script>
+</body>
+</html>
